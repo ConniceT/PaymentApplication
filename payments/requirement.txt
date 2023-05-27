@@ -1,0 +1,2 @@
+fastapi=0.75.0
+reddis-om=0.02.0
