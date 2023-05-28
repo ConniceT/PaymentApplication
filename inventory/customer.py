@@ -2,18 +2,22 @@ from main import redis , Product
 from redis.exceptions import RedisError
 import time
 
-key='order-completed'
+key='process_order'
 Inv_group='inventory-group'
 
 
 try:
+    # Create the consumer group if it doesn't exist
     redis.xgroup_create(key, Inv_group, mkstream=True)
+    group_exists = redis.xgroup_exists(key, Inv_group)
 except RedisError as e:
     print(f"Failed to create consumer group: {e}")
 
-
-try:
-    results = redis.xreadgroup( Inv_group,key, {key:'.'}, None)
-except RedisError as e:
-    print(f"Failed to read from consumer group: {e}")
-time.sleep(1)
+while True:
+    try:
+        # Read from the consumer group
+        results = redis.xreadgroup( Inv_group, key, {key:'>'}, None)
+        print(results)
+    except RedisError as e:
+        print(f"Failed to read from consumer group{group_exists}: {e}")
+    time.sleep(1)

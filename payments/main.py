@@ -1,15 +1,13 @@
 
-import logging
-import os
-import time
-from collections import defaultdict
-
-import httpx
+from xml.dom import NotFoundErr
+from fastapi import HTTPException
+import os, time, asyncio, logging
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from redis_om import HashModel, get_redis_connection
 from starlette.requests import Request
+import requests
 
 logging.basicConfig(level=logging.INFO)
 logger=logging.getLogger(__name__)
@@ -55,61 +53,93 @@ class Order(HashModel):
     shipping: float
     total:float
     quantity: int
-    status:str
+    status: str  # pending, completed, refunded
   
 
     class Meta:
         database = redis
 
 
+@app.get('/orders/{pk}')
+async def get_order(pk: str):
+    try:
+        order = Order.get(pk)
+        if order is None:
+            raise HTTPException(status_code=404, detail=f"Order not found for ID: {pk}")
+        return order
+    except NotFoundErr:
+        raise HTTPException(status_code=404, detail=f"Order not found for ID: {pk}")
+
+
+
 @app.post('/orders')
-async def create_order(order: Order, background_tasks: BackgroundTasks):
-    order.status = "created"
-    background_tasks.add_task(process_order, order.order_id)
-    return {"message": "Order created", "order_id": order.order_id, "order": order}
+async def create_order(request: Request, background_tasks: BackgroundTasks):
+    # Fetch product information based on the product_id
 
+    body= await request.json()
+    product_id = body.get('id')
 
-async def process_order(order_id: str):
+    if not product_id:
+        raise HTTPException(400, "Product ID is missing in the request payload")
 
-     # Make an HTTP request to fetch the product information based on the order ID
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"http://localhost:8001/products/{order_id}")
-        if response.status_code == 200:
-            products = response.json()
-        else:
-            raise Exception(f"Failed to retrieve product for order ID: {order_id}")
-  
+    response = requests.get(f'http://localhost:8000/products/{product_id}')
+
+    print(response.content)
+    print(response.status_code)
+
+    if response.status_code == 200:
+        product = response.json().get('products', {}).get(product_id)
+        print(product)
+
+        if not product:
+            raise HTTPException(404, f"Product not found for ID: {product_id}")
+
+        shipping_days = product.get('shipping_days')
+    else:
+        raise HTTPException(404, f"Product not found for ID: {product_id}")
+
+    print(shipping_days)
+
+    shipping_rates = {
+        3: 10.0,
+        5: 7.5,
+        7: 5.0
+    }
+    
+
+    shipping_rate = shipping_rates.get(shipping_days, 7.5)
+    tax_rate = 0.15
+    quantity = product["quantity"]
+    price = product["price"]
+    tax = price * tax_rate
+    shipping = shipping_rate
+    total = price + tax + shipping
+
     order = Order(
-    order_id=order_id,
-    price=0.0,  # Replace with the actual price calculation logic
-    tax=0.0,  # Replace with the actual tax calculation logic
-    shipping=0.0,  # Replace with the actual shipping calculation logic
-    total=0.0,  # Replace with the actual total calculation logic
-    quantity=len(products),
-    status="processed"
-
+        order_id= product_id,
+        price=price,
+        tax=tax,
+        shipping=shipping,
+        total=total,
+        quantity=quantity,
+        status="pending"
     )
+
+    if order is  None:
+        raise HTTPException(status_code=400, detail="Product error, please check data")
+
+    order.save()
+    background_tasks.add_task(process_order, order)
+
+    return order
+
+
+
+async def process_order(order: Order):
     # Simulate a delay
-    await time.sleep(5)
-    redis.xadd(process_order, order.dict(), '*')
-
-
-
-
-@app.get('/orders/{order_id}')
-async def get_order(order_id: str):
-    return Order.get(order_id)
-
-
-@app.put('/orders/{order_id}/process')
-async def process_order_endpoint(order_id: str, background_tasks: BackgroundTasks):
-    # Process the order asynchronously
-    background_tasks.add_task(process_order, order_id)
-    return {"message": "Order processing initiated", "order_id": order_id}
-
-@app.middleware("http")
-async def log_request(request: Request, call_next):
-    # Log incoming requests
-    print(f"Incoming request: {request.method} {request.url}")
-    response = await call_next(request)
-    return response
+    asyncio.sleep(5)
+    if order is None:
+        raise HTTPException(status_code=404, detail=f"Cannot process order")
+    order.status = "processed"
+    order.save()
+    redis.xadd('process_order', order.dict(), '*')

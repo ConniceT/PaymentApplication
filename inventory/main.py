@@ -50,6 +50,11 @@ class Product(HashModel):
     color: str
     quantity: int
     discount: float
+    shipping_days: float
+    discounted_price: float = 0.00
+    
+    
+
 
     class Meta:
         database = redis
@@ -70,7 +75,10 @@ def format(product_id: str):
         "name": product.name,
         "price": product.price,
         "color": product.color,
-        "quantity": product.quantity
+        "quantity": product.quantity,
+        "discount": product.discount,
+        "shipping_days": product.shipping_days
+        
       
     }
 
@@ -116,7 +124,7 @@ def create_products(products: Union[Product, List[Product]]):
     """
     if isinstance(products, list):
         for product in products:
-            if product.discount:
+            if product.discount > 0.00:
                 # Calculate discounted price if a discount is provided
                 product.discounted_price = product.price - (product.price * product.discount)
             product.save()
@@ -124,7 +132,7 @@ def create_products(products: Union[Product, List[Product]]):
                 "products": products
         }
     else:
-        if products.discount:
+        if products.discount > 0.00:
             # Calculate discounted price if a discount is provided
             products.discounted_price = products.price - (products.price * products.discount)
         products.save()
@@ -158,4 +166,31 @@ def delete_product(product_id:str):
         # No products were found for deletion
         raise HTTPException(status_code=404, detail="Products not found")
 
+
+@app.delete('/products')
+def delete_all_products():
+    """
+    Delete all products.
+    """
+    # Get all product IDs
+    all_product_ids = Product.all_pks()
+    
+    deleted_count = 0
+
+    for product_id in all_product_ids:
+        try:
+            Product.delete(product_id)
+            deleted_count += 1
+        except KeyError:
+            pass
+
+    if deleted_count > 0:
+        # Products were successfully deleted
+        return {
+            "message": f"All products deleted successfully",
+            "status": status.HTTP_204_NO_CONTENT
+        }
+    else:
+        # No products were found for deletion
+        raise HTTPException(status_code=404, detail="No products found")
 
